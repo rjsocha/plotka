@@ -6,6 +6,8 @@ PREFIX  ?= /usr/local
 # Version from the git tag (matches the GoReleaser build); falls back to "dev".
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 
+# CGO_ENABLED=0: pure-Go, statically linked (no glibc) - matches the release
+# build and lets the systemd unit harden with NoExecPaths/MemoryDenyWriteExecute.
 # -trimpath: reproducible paths; -s strip symbol table, -w strip DWARF;
 # -X main.version: embed the version (see cmd/plotka/main.go).
 GOFLAGS := -trimpath
@@ -16,7 +18,7 @@ LDFLAGS := -s -w -X main.version=$(VERSION)
 all: build
 
 build:
-	go build $(GOFLAGS) -ldflags="$(LDFLAGS)" -o $(BIN_DIR)/$(BINARY) $(PKG)
+	CGO_ENABLED=0 go build $(GOFLAGS) -ldflags="$(LDFLAGS)" -o $(BIN_DIR)/$(BINARY) $(PKG)
 
 test:
 	go test ./...
