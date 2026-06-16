@@ -1,0 +1,12 @@
+# /etc/default/plotka - configuration for the plotka systemd service.
+# Referenced by plotka.service via EnvironmentFile. Edit, then:
+#   systemctl restart plotka
+
+# Shared cluster secret (keeps it out of `ps`). Generate once:
+#   head -c 32 /dev/urandom | base64
+PLOTKA_CLUSTER_KEY=
+
+# All server flags on one line. $PLOTKA_ARGS is whitespace-split by systemd
+# into separate arguments, so do not quote individual flags.
+# Defaults if left empty: DNS:53, HTTP:80, tcp:2000, mux off, no cluster.
+PLOTKA_ARGS=--register 10.53.53.53:registry.vm --port 7946 --join 10.0.0.11,10.0.0.12,10.0.0.13

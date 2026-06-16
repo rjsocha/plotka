@@ -1,0 +1,16 @@
+[Unit]
+Description=plotka dynamic DNS registry
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+EnvironmentFile=-/etc/default/plotka
+ExecStart=/usr/local/bin/plotka server $PLOTKA_ARGS
+RuntimeDirectory=plotka
+RuntimeDirectoryMode=0700
+DynamicUser=yes
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target
