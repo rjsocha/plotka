@@ -6,18 +6,19 @@
 //   GET /ip               -> reverse query: name, 404 if none
 //   GET /exec/list        -> list all records, aligned columns (name capped)
 //   GET /exec/list/full   -> same records, single-space, uncapped, no alignment
+//   GET /exec/nodes       -> cluster members (like `cluster status`), aligned
+//   GET /exec/nodes/full  -> same members, single-space, no alignment
 package httpapi
 
 import (
 	"fmt"
 	"net"
 	"net/http"
-	"sort"
-	"strconv"
 	"strings"
 	"text/tabwriter"
 	"time"
 
+	"plotka/internal/admin"
 	"plotka/internal/protocol"
 	"plotka/internal/server"
 	"plotka/internal/store"
@@ -119,61 +120,54 @@ func (h *Handler) query(w http.ResponseWriter, segs []string) {
 func (h *Handler) exec(w http.ResponseWriter, segs []string) {
 	switch {
 	case len(segs) == 1 && segs[0] == "list":
-		h.list(w, false)
+		writeTable(w, admin.Records(h.st, h.maxTTL, h.now()), false, nameWidth)
 	case len(segs) == 2 && segs[0] == "list" && segs[1] == "full":
-		h.list(w, true)
+		writeTable(w, admin.Records(h.st, h.maxTTL, h.now()), true, 0)
+	case len(segs) == 1 && segs[0] == "nodes":
+		h.nodes(w, false)
+	case len(segs) == 2 && segs[0] == "nodes" && segs[1] == "full":
+		h.nodes(w, true)
 	default:
-		http.Error(w, "usage: GET /exec/list[/full]", http.StatusBadRequest)
+		http.Error(w, "usage: GET /exec/list[/full] or /exec/nodes[/full]", http.StatusBadRequest)
 	}
 }
 
-// list renders all records like the CLI `list`: columns name, ip, ttl, ts, kind,
-// statics first then dynamics by remaining TTL. Aligned with capped name unless
-// full, in which case rows are single-space separated and the name is uncapped.
-func (h *Handler) list(w http.ResponseWriter, full bool) {
-	type row struct {
-		static bool
-		ttl    int64
-		fields []string
+// nodes renders the cluster member table (same provider as `cluster status`).
+func (h *Handler) nodes(w http.ResponseWriter, full bool) {
+	raw, ok := admin.Members()
+	if !ok {
+		http.Error(w, "cluster info unavailable", http.StatusServiceUnavailable)
+		return
 	}
-	var rows []row
-	now := h.now()
-	for _, it := range h.st.List() {
-		kind, ttlStr := "dynamic", "-"
-		var ttl int64
-		if it.Static {
-			kind = "static"
-		} else {
-			ttl = int64((h.maxTTL - now.Sub(it.TS)).Seconds())
-			if ttl < 0 {
-				ttl = 0
-			}
-			ttlStr = strconv.FormatInt(ttl, 10)
-		}
-		rows = append(rows, row{it.Static, ttl, []string{it.Name, it.IP, ttlStr, it.TS.Format(time.RFC3339), kind}})
-	}
-	sort.Slice(rows, func(i, j int) bool {
-		a, b := rows[i], rows[j]
-		if a.static != b.static {
-			return a.static
-		}
-		if !a.static && a.ttl != b.ttl {
-			return a.ttl > b.ttl
-		}
-		return strings.Join(a.fields, "\t") < strings.Join(b.fields, "\t")
-	})
+	writeTable(w, raw, full, 0)
+}
+
+// writeTable renders tab-separated rows. When full, fields are joined by a
+// single space with no alignment; otherwise columns are space-aligned via
+// tabwriter. capName>0 truncates the first column to capName runes.
+func writeTable(w http.ResponseWriter, raw string, full bool, capName int) {
+	lines := strings.Split(strings.TrimRight(raw, "\n"), "\n")
 	if full {
-		for _, r := range rows {
-			fmt.Fprintln(w, strings.Join(r.fields, " "))
+		for _, ln := range lines {
+			if ln == "" {
+				continue
+			}
+			fmt.Fprintln(w, strings.Join(strings.Split(ln, "\t"), " "))
 		}
 		return
 	}
 	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
-	for _, r := range rows {
-		if rn := []rune(r.fields[0]); len(rn) > nameWidth {
-			r.fields[0] = string(rn[:nameWidth])
+	for _, ln := range lines {
+		if ln == "" {
+			continue
 		}
-		fmt.Fprintln(tw, strings.Join(r.fields, "\t"))
+		fields := strings.Split(ln, "\t")
+		if capName > 0 && len(fields) > 0 {
+			if rn := []rune(fields[0]); len(rn) > capName {
+				fields[0] = string(rn[:capName])
+			}
+		}
+		fmt.Fprintln(tw, strings.Join(fields, "\t"))
 	}
 	tw.Flush()
 }

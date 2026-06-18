@@ -45,6 +45,59 @@ func members() func() string {
 	return membersFn
 }
 
+// Members returns the preformatted cluster member table and whether a provider
+// is set. Shared by the CLUSTER admin command and the HTTP /exec/nodes route.
+func Members() (string, bool) {
+	if f := members(); f != nil {
+		return f(), true
+	}
+	return "", false
+}
+
+// Records returns the record table as preformatted tab-separated lines
+// (name, ip, ttl-secs, ts, kind), statics first then dynamics by remaining TTL,
+// ties broken by the rendered line. Shared by the LIST admin command and the
+// HTTP /exec/list route.
+func Records(st *store.Store, maxTTL time.Duration, now time.Time) string {
+	type row struct {
+		static bool
+		ttl    int64
+		line   string
+	}
+	var rows []row
+	for _, it := range st.List() {
+		kind, ttlStr := "dynamic", "-"
+		var ttl int64
+		if it.Static {
+			kind = "static"
+		} else {
+			ttl = int64((maxTTL - now.Sub(it.TS)).Seconds())
+			if ttl < 0 {
+				ttl = 0
+			}
+			ttlStr = strconv.FormatInt(ttl, 10)
+		}
+		line := fmt.Sprintf("%s\t%s\t%s\t%s\t%s", it.Name, it.IP, ttlStr, it.TS.Format(time.RFC3339), kind)
+		rows = append(rows, row{it.Static, ttl, line})
+	}
+	sort.Slice(rows, func(i, j int) bool {
+		a, b := rows[i], rows[j]
+		if a.static != b.static {
+			return a.static
+		}
+		if !a.static && a.ttl != b.ttl {
+			return a.ttl > b.ttl
+		}
+		return a.line < b.line
+	})
+	var b strings.Builder
+	for _, r := range rows {
+		b.WriteString(r.line)
+		b.WriteByte('\n')
+	}
+	return b.String()
+}
+
 func Listen(sock string, st *store.Store, now func() time.Time) (*Server, error) {
 	_ = os.Remove(sock) // stale socket from a previous run
 	l, err := net.Listen("unix", sock)
@@ -75,42 +128,7 @@ func handle(c net.Conn, st *store.Store, now func() time.Time) {
 	}
 	switch strings.ToUpper(fields[0]) {
 	case "LIST":
-		// Sort: statics first (never expire), then dynamics by remaining TTL
-		// descending; ties broken by the rendered line (name is the first field).
-		type row struct {
-			static bool
-			ttl    int64
-			line   string
-		}
-		var rows []row
-		for _, it := range st.List() {
-			kind, ttlStr := "dynamic", "-"
-			var ttl int64
-			if it.Static {
-				kind = "static" // never expires; ttl stays "-"
-			} else {
-				ttl = int64((MaxTTL - now().Sub(it.TS)).Seconds())
-				if ttl < 0 {
-					ttl = 0
-				}
-				ttlStr = strconv.FormatInt(ttl, 10)
-			}
-			line := fmt.Sprintf("%s\t%s\t%s\t%s\t%s", it.Name, it.IP, ttlStr, it.TS.Format(time.RFC3339), kind)
-			rows = append(rows, row{it.Static, ttl, line})
-		}
-		sort.Slice(rows, func(i, j int) bool {
-			a, b := rows[i], rows[j]
-			if a.static != b.static {
-				return a.static // statics on top
-			}
-			if !a.static && a.ttl != b.ttl {
-				return a.ttl > b.ttl // dynamics: highest TTL first
-			}
-			return a.line < b.line
-		})
-		for _, r := range rows {
-			fmt.Fprintln(c, r.line)
-		}
+		fmt.Fprint(c, Records(st, MaxTTL, now()))
 	case "CLUSTER":
 		mf := members()
 		if mf == nil {

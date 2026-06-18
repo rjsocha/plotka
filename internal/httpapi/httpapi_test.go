@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"plotka/internal/admin"
 	"plotka/internal/store"
 )
 
@@ -118,6 +119,25 @@ func TestExecUnknown(t *testing.T) {
 	h := New(store.New(), now, time.Hour)
 	if rr := do(h, http.MethodGet, "/exec/bogus", ""); rr.Code != 400 {
 		t.Fatalf("code %d, want 400", rr.Code)
+	}
+}
+
+func TestExecNodes(t *testing.T) {
+	admin.SetMembers(func() string {
+		return "node-a\t10.0.0.1:7946\talive\t5s\n" +
+			"node-bb\t10.0.0.2:7946\tsuspect\t1m\n"
+	})
+	h := New(store.New(), now, time.Hour)
+
+	aligned := do(h, http.MethodGet, "/exec/nodes", "").Body.String()
+	want := "node-a   10.0.0.1:7946  alive    5s\n" +
+		"node-bb  10.0.0.2:7946  suspect  1m\n"
+	if aligned != want {
+		t.Fatalf("aligned %q want %q", aligned, want)
+	}
+	full := do(h, http.MethodGet, "/exec/nodes/full", "").Body.String()
+	if full != "node-a 10.0.0.1:7946 alive 5s\nnode-bb 10.0.0.2:7946 suspect 1m\n" {
+		t.Fatalf("full %q", full)
 	}
 }
 
