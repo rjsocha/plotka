@@ -3,6 +3,7 @@ package gossip
 import (
 	"fmt"
 	"io"
+	"log"
 	"time"
 
 	"github.com/hashicorp/memberlist"
@@ -19,7 +20,8 @@ type Config struct {
 	SecretKey     []byte // 16/24/32 bytes, or nil
 	PushPull      time.Duration
 	Store         *store.Store
-	EventLog io.Writer // join/leave log sink; nil = silent
+	EventLog      io.Writer // join/leave + memberlist log sink; nil = silent
+	LogTimestamp  bool      // prefix memberlist log lines with date/time
 }
 
 type Gossip struct {
@@ -43,7 +45,11 @@ func Create(c Config) (*Gossip, error) {
 	ev := newEventLogger(c.EventLog)
 	cfg.Events = ev
 	if c.EventLog != nil {
-		cfg.LogOutput = c.EventLog
+		flags := 0
+		if c.LogTimestamp {
+			flags = log.LstdFlags
+		}
+		cfg.Logger = log.New(c.EventLog, "", flags)
 	} else {
 		cfg.LogOutput = logDiscard{}
 	}

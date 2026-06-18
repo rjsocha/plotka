@@ -33,6 +33,29 @@ func (s *staticList) Set(v string) error {
 	return nil
 }
 
+// loadRegisterFile appends static ip:name entries from path, one per line.
+// Blank lines are skipped; a malformed line is warned about and skipped, not
+// fatal. Each valid line uses the --register format.
+func loadRegisterFile(path string, statics *staticList) error {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	for i, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		st, err := server.ParseStatic(line)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "plotka: register-file %s:%d: skipping invalid line: %v\n", path, i+1, err)
+			continue
+		}
+		*statics = append(*statics, st)
+	}
+	return nil
+}
+
 func runServer(args []string) error {
 	fs := flag.NewFlagSet("server", flag.ContinueOnError)
 	regBind := fs.String("registry-bind", "10.53.53.53", "service bind IP (shared by all listeners)")
@@ -46,6 +69,7 @@ func runServer(args []string) error {
 	reassertEvery := fs.Duration("reassert-interval", time.Hour, "how often to refresh --register statics")
 	var statics staticList
 	fs.Var(&statics, "register", "static ip:name, repeatable")
+	registerFile := fs.String("register-file", "", "file of static ip:name entries, one per line (same format as --register)")
 	gBind := fs.String("bind", "", "cluster listen IP (\"\" = all interfaces)")
 	gPort := fs.Int("port", 7946, "cluster port (TCP+UDP)")
 	gAdvertise := fs.String("advertise", "", "cluster advertise IP (default: a host IP that is not --registry-bind)")
@@ -54,11 +78,17 @@ func runServer(args []string) error {
 	gKeyFile := fs.String("cluster-key-file", "", "file containing the cluster secret")
 	nodeName := fs.String("node-name", "", "unique node name (default: hostname)")
 	verbose := fs.Bool("verbose", false, "log record changes and gossip activity (joins/leaves, memberlist) to stderr")
+	logTimestamp := fs.Bool("log-timestamp", false, "prefix memberlist log lines with date/time (off by default; the journal already timestamps)")
 	if err := fs.Parse(args); err != nil {
 		if err == flag.ErrHelp {
 			return nil
 		}
 		return err
+	}
+	if *registerFile != "" {
+		if err := loadRegisterFile(*registerFile, &statics); err != nil {
+			return err
+		}
 	}
 
 	st := store.New()
@@ -127,6 +157,7 @@ func runServer(args []string) error {
 		SecretKey:     key,
 		Store:         st,
 		EventLog:      eventLog,
+		LogTimestamp:  *logTimestamp,
 	})
 	if err != nil {
 		return fmt.Errorf("cluster: %w", err)
