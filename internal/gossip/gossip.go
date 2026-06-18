@@ -23,7 +23,8 @@ type Config struct {
 }
 
 type Gossip struct {
-	ml *memberlist.Memberlist
+	ml     *memberlist.Memberlist
+	events *eventLogger
 }
 
 // Create builds a memberlist node, wires the store's onChange to the broadcast
@@ -32,17 +33,20 @@ func Create(c Config) (*Gossip, error) {
 	q := &memberlist.TransmitLimitedQueue{RetransmitMult: 3}
 	d := &delegate{store: c.Store, q: q}
 
-	cfg := memberlist.DefaultLANConfig()
+	cfg := memberlist.DefaultWANConfig()
 	cfg.Name = c.Name
 	cfg.BindAddr = c.BindAddr
 	cfg.BindPort = c.BindPort
 	cfg.AdvertiseAddr = c.AdvertiseAddr
 	cfg.AdvertisePort = c.BindPort
 	cfg.Delegate = d
+	ev := newEventLogger(c.EventLog)
+	cfg.Events = ev
 	if c.EventLog != nil {
-		cfg.Events = eventLogger{w: c.EventLog}
+		cfg.LogOutput = c.EventLog
+	} else {
+		cfg.LogOutput = logDiscard{}
 	}
-	cfg.LogOutput = logDiscard{}
 	if len(c.SecretKey) > 0 {
 		cfg.SecretKey = c.SecretKey
 	}
@@ -60,7 +64,7 @@ func Create(c Config) (*Gossip, error) {
 		q.QueueBroadcast(&broadcast{msg: encodeDelta(dl)})
 	})
 
-	return &Gossip{ml: ml}, nil
+	return &Gossip{ml: ml, events: ev}, nil
 }
 
 // Join contacts seed peers (host IPs, never the VIP). Safe with an empty list.
@@ -78,10 +82,15 @@ func (g *Gossip) Members() int { return g.ml.NumMembers() }
 func (g *Gossip) MemberList() []Member {
 	var out []Member
 	for _, n := range g.ml.Members() {
+		seen := "-"
+		if t, ok := g.events.lastSeen(n.Name); ok {
+			seen = fmtAge(time.Since(t))
+		}
 		out = append(out, Member{
 			Name:  n.Name,
 			Addr:  fmt.Sprintf("%s:%d", n.Addr, n.Port),
 			State: stateString(n.State),
+			Seen:  seen,
 		})
 	}
 	return out

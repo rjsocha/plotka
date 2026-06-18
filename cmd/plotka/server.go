@@ -4,6 +4,7 @@ import (
 	"encoding/base64"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"os/signal"
 	"strings"
@@ -52,7 +53,7 @@ func runServer(args []string) error {
 	gKey := fs.String("cluster-key", "", "shared cluster secret (16/24/32 bytes, base64); also PLOTKA_CLUSTER_KEY or --cluster-key-file")
 	gKeyFile := fs.String("cluster-key-file", "", "file containing the cluster secret")
 	nodeName := fs.String("node-name", "", "unique node name (default: hostname)")
-	verbose := fs.Bool("verbose", false, "log every record change (register/replicate/deregister/expire) to stderr")
+	verbose := fs.Bool("verbose", false, "log record changes and gossip activity (joins/leaves, memberlist) to stderr")
 	if err := fs.Parse(args); err != nil {
 		if err == flag.ErrHelp {
 			return nil
@@ -64,7 +65,9 @@ func runServer(args []string) error {
 	now := time.Now
 	st.SetExpiry(*maxttl, now) // reject expired live deltas from stale peers
 	admin.MaxTTL = *maxttl
+	var eventLog io.Writer
 	if *verbose {
+		eventLog = os.Stderr
 		st.SetEvents(func(e store.Event) {
 			if e.IP != "" {
 				fmt.Fprintf(os.Stderr, "plotka: %s %s -> %s\n", e.Kind, e.Name, e.IP)
@@ -122,9 +125,8 @@ func runServer(args []string) error {
 		BindPort:      *gPort,
 		AdvertiseAddr: advertise,
 		SecretKey:     key,
-		PushPull:      time.Hour,
 		Store:         st,
-		EventLog:      os.Stderr,
+		EventLog:      eventLog,
 	})
 	if err != nil {
 		return fmt.Errorf("cluster: %w", err)
@@ -140,7 +142,7 @@ func runServer(args []string) error {
 	admin.SetMembers(func() string {
 		var b strings.Builder
 		for _, m := range g.MemberList() {
-			fmt.Fprintf(&b, "%s\t%s\t%s\n", m.Name, m.Addr, m.State)
+			fmt.Fprintf(&b, "%s\t%s\t%s\t%s\n", m.Name, m.Addr, m.State, m.Seen)
 		}
 		return b.String()
 	})

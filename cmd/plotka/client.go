@@ -20,7 +20,7 @@ operations:
   set <name> <ip>       create/update a record
   delete <name>         remove a record
   purge                 run the purge sweep now
-  cluster status        list cluster members (name, addr, state)`
+  cluster status        list cluster members (name, addr, state, seen)`
 
 func runClient(args []string) error {
 	fs := flag.NewFlagSet("client", flag.ContinueOnError)
