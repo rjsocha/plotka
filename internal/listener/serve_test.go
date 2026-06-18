@@ -36,7 +36,7 @@ func newServers(t *testing.T, cfg Config, st *store.Store) *Servers {
 	cfg.Bind = "127.0.0.1"
 	cfg.Store = st
 	cfg.DNS = dnssrv.New(st, now)
-	cfg.HTTP = httpapi.New(st, now)
+	cfg.HTTP = httpapi.New(st, now, time.Hour)
 	cfg.Now = now
 	s, err := Start(cfg)
 	if err != nil {

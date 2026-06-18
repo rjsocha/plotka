@@ -121,7 +121,7 @@ func runServer(args []string) error {
 		TCPPort:  *tcpPort,
 		Store:    st,
 		DNS:      dnssrv.New(st, now),
-		HTTP:     httpapi.New(st, now),
+		HTTP:     httpapi.New(st, now, *maxttl),
 		Now:      now,
 	})
 	if err != nil {
