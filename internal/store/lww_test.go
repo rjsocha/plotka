@@ -86,6 +86,52 @@ func TestNoResurrectExpiredLiveDelta(t *testing.T) {
 	}
 }
 
+func TestNoResurrectExpiredTombstoneFromPeer(t *testing.T) {
+	now := time.Unix(100000, 0)
+	maxttl := 100 * time.Second
+
+	// Node A deleted help.vm long ago; its tombstone has since been hard-GC'd by
+	// Purge, so A has no record of the name at all.
+	a := New()
+	a.SetExpiry(maxttl, func() time.Time { return now })
+
+	var events []Event
+	a.SetEvents(func(e Event) { events = append(events, e) })
+
+	// push/pull anti-entropy: a peer that has NOT yet purged still ships the
+	// long-dead tombstone in its snapshot (age 100000s >> maxttl 100s).
+	oldTomb := Delta{Name: "help.vm", TSNanos: time.Unix(0, 0).UnixNano(), Deleted: true}
+	a.Merge([]Delta{oldTomb})
+
+	// The stale tombstone must NOT re-create the record. If it does, A logs a
+	// replicate-delete, the next Purge GCs it again, and the next push/pull
+	// resurrects it - an unbounded thrash that never converges.
+	for _, e := range events {
+		if e.Kind == "replicate-delete" {
+			t.Fatalf("expired tombstone resurrected on merge -> replicate-delete thrash: %+v", e)
+		}
+	}
+	if e := a.fwd["help.vm"]; e != nil {
+		t.Fatalf("expired tombstone must not be re-installed, got %+v", e)
+	}
+}
+
+func TestFreshTombstonePropagatesToUnknownName(t *testing.T) {
+	now := time.Unix(100000, 0)
+	maxttl := 100 * time.Second
+
+	a := New()
+	a.SetExpiry(maxttl, func() time.Time { return now })
+
+	// A recently-deleted name (age 10s < maxttl 100s) that A has never seen must
+	// still propagate, so a genuine delete reaches every node. The age guard must
+	// reject only tombstones already past maxttl.
+	fresh := Delta{Name: "gone.vm", TSNanos: now.Add(-10 * time.Second).UnixNano(), Deleted: true}
+	if !a.ApplyDelta(fresh) {
+		t.Fatal("fresh tombstone within maxttl must propagate to an unknown name")
+	}
+}
+
 func TestPurgeRemovesTombstones(t *testing.T) {
 	s := New()
 	s.ApplyDelta(d("h", false, "", time.Unix(1000, 0).UnixNano(), true))

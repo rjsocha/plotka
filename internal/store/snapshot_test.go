@@ -25,6 +25,36 @@ func TestDeleteTombstonesWithTS(t *testing.T) {
 	}
 }
 
+func TestSnapshotOmitsExpiredTombstones(t *testing.T) {
+	maxttl := 100 * time.Second
+	clock := time.Unix(1000, 0)
+	s := New()
+	s.SetExpiry(maxttl, func() time.Time { return clock })
+
+	// Installed while fresh (age 0, accepted), then aged past maxttl below without
+	// a Purge sweep - exactly how a tombstone lingers in the store between sweeps.
+	s.ApplyDelta(Delta{Name: "stale.vm", TSNanos: time.Unix(1000, 0).UnixNano(), Deleted: true})
+	s.Register("live.vm", net.ParseIP("10.0.0.1"), time.Unix(1000, 0))
+
+	clock = time.Unix(2000, 0) // stale.vm tombstone now 1000s old >> maxttl 100s
+	// A still-fresh tombstone (age 20s) must keep shipping so the delete propagates.
+	s.ApplyDelta(Delta{Name: "fresh.vm", TSNanos: time.Unix(1980, 0).UnixNano(), Deleted: true})
+
+	names := map[string]bool{}
+	for _, dl := range s.Snapshot() {
+		names[dl.Name] = true
+	}
+	if names["stale.vm"] {
+		t.Error("tombstone older than maxttl must be omitted (every peer would reject it)")
+	}
+	if !names["fresh.vm"] {
+		t.Error("fresh tombstone within maxttl must remain (delete still propagating)")
+	}
+	if !names["live.vm"] {
+		t.Error("live record must always be in snapshot")
+	}
+}
+
 func TestMergeAppliesLWW(t *testing.T) {
 	a := New()
 	a.Register("h", net.ParseIP("10.0.0.1"), time.Unix(1000, 0))

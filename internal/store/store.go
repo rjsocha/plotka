@@ -105,9 +105,14 @@ func (s *Store) applyLocked(dl Delta) bool {
 		return s.writeLocked(e, name, dl) // static takes over a dynamic record
 	}
 
-	// BUG-2 guard: never accept a non-static live delta older than maxttl
-	// (would resurrect after a tombstone is purged). Static is exempt.
-	if !dl.Static && !dl.Deleted && s.maxttl > 0 && s.nowTime().Sub(time.Unix(0, dl.TSNanos)) > s.maxttl {
+	// Age guard: never accept a non-static delta older than maxttl. For a live
+	// delta this stops a record resurrecting after its tombstone is purged. For
+	// a tombstone it stops a long-dead tombstone, still shipped in a peer's
+	// push-pull snapshot, from re-creating itself after a local Purge GC'd it -
+	// an unbounded replicate-delete thrash that never converges. Anything older
+	// than maxttl is the local Purge's responsibility, not replication's. Static
+	// is exempt.
+	if !dl.Static && s.maxttl > 0 && s.nowTime().Sub(time.Unix(0, dl.TSNanos)) > s.maxttl {
 		return false
 	}
 
@@ -354,9 +359,18 @@ func (s *Store) Purge(maxttl time.Duration, now time.Time) int {
 func (s *Store) Snapshot() []Delta {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
+	now := s.nowTime()
 	var out []Delta
 	add := func(name string, v6 bool, r *record) {
 		if r == nil {
+			return
+		}
+		// Don't ship a tombstone already past maxttl: every peer's apply-time age
+		// guard would reject it anyway, and shipping it feeds the resurrect/purge
+		// thrash on a peer that hasn't run its own sweep yet. This mirrors the
+		// apply guard, so a tombstone is sent iff a receiver would accept it. Live
+		// and static records are always shipped; maxttl<=0 disables the filter.
+		if r.deleted && !r.static && s.maxttl > 0 && now.Sub(r.ts) > s.maxttl {
 			return
 		}
 		dl := Delta{Name: name, V6: v6, TSNanos: r.ts.UnixNano(), Deleted: r.deleted, Static: r.static}
