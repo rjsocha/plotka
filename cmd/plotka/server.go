@@ -166,7 +166,7 @@ func runServer(args []string) error {
 	seeds := splitNonEmpty(*gJoin, ",")
 	if len(seeds) > 0 {
 		if err := g.Join(seeds); err != nil {
-			fmt.Fprintln(os.Stderr, "cluster join:", err) // non-fatal: the retry loop keeps trying while alone
+			fmt.Fprintln(os.Stderr, "cluster join:", err) // non-fatal: the rejoin loop keeps trying
 		}
 	}
 	fmt.Fprintf(os.Stderr, "plotka: node up %q on :%d, %d member(s)\n", name, *gPort, g.Members())
@@ -185,8 +185,9 @@ func runServer(args []string) error {
 	stop := make(chan struct{})
 	go server.RunLoops(st, statics, *maxttl, *purgeEvery, *reassertEvery, now, stop)
 
-	// Keep retrying the join while this node is alone, so cluster formation does
-	// not depend on cold-start order (memberlist does not retry Join itself).
+	// Keep rejoining seeds that are not alive members, so cluster formation does
+	// not depend on cold-start order and islands merge after a partition heals
+	// (memberlist does not retry Join or rejoin dead nodes itself).
 	if len(seeds) > 0 {
 		go func() {
 			t := time.NewTicker(10 * time.Second)
@@ -196,9 +197,7 @@ func runServer(args []string) error {
 				case <-stop:
 					return
 				case <-t.C:
-					if g.Members() <= 1 {
-						_ = g.Join(seeds) // best-effort; NotifyJoin logs success
-					}
+					_, _ = g.Rejoin(seeds) // best-effort; NotifyJoin logs success
 				}
 			}
 		}()

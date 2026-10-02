@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net"
+	"strconv"
 	"time"
 
 	"github.com/hashicorp/memberlist"
@@ -25,8 +27,9 @@ type Config struct {
 }
 
 type Gossip struct {
-	ml     *memberlist.Memberlist
-	events *eventLogger
+	ml       *memberlist.Memberlist
+	events   *eventLogger
+	bindPort int
 }
 
 // Create builds a memberlist node, wires the store's onChange to the broadcast
@@ -70,7 +73,7 @@ func Create(c Config) (*Gossip, error) {
 		q.QueueBroadcast(&broadcast{msg: encodeDelta(dl)})
 	})
 
-	return &Gossip{ml: ml, events: ev}, nil
+	return &Gossip{ml: ml, events: ev, bindPort: c.BindPort}, nil
 }
 
 // Join contacts seed peers (host IPs, never the VIP). Safe with an empty list.
@@ -80,6 +83,50 @@ func (g *Gossip) Join(seeds []string) error {
 	}
 	_, err := g.ml.Join(seeds)
 	return err
+}
+
+// Rejoin joins every seed that is not currently an alive member and returns how
+// many seeds it tried. memberlist never rejoins dead nodes, so after a partition
+// heals this is what merges the islands again. The own address is always an
+// alive member, so a node never joins itself; a healthy cluster is a no-op.
+func (g *Gossip) Rejoin(seeds []string) (int, error) {
+	alive := map[string]bool{}
+	for _, n := range g.ml.Members() {
+		if n.State == memberlist.StateAlive {
+			alive[net.JoinHostPort(n.Addr.String(), strconv.Itoa(int(n.Port)))] = true
+		}
+	}
+	var missing []string
+	for _, s := range seeds {
+		if !g.seedAlive(s, alive) {
+			missing = append(missing, s)
+		}
+	}
+	if len(missing) == 0 {
+		return 0, nil
+	}
+	return len(missing), g.Join(missing)
+}
+
+// seedAlive reports whether seed (ip, host, ip:port or host:port; no port =
+// own cluster port, as in memberlist) resolves to an alive member address.
+func (g *Gossip) seedAlive(seed string, alive map[string]bool) bool {
+	host, port, err := net.SplitHostPort(seed)
+	if err != nil {
+		host, port = seed, strconv.Itoa(g.bindPort)
+	}
+	ips := []string{host}
+	if net.ParseIP(host) == nil {
+		if ips, err = net.LookupHost(host); err != nil {
+			return false
+		}
+	}
+	for _, ip := range ips {
+		if alive[net.JoinHostPort(net.ParseIP(ip).String(), port)] {
+			return true
+		}
+	}
+	return false
 }
 
 func (g *Gossip) Members() int { return g.ml.NumMembers() }
